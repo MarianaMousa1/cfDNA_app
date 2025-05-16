@@ -1,0 +1,339 @@
+### d_PCR shiny app
+install.packages(c("shiny", "shinydashboard", "readxl", "dplyr", "tidyr", "ggplot2", "plotly", "DT"))
+
+library(shiny)
+library(shinydashboard)
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(plotly)
+library(DT)
+
+ui <- dashboardPage(
+  dashboardHeader(title = "dPCR Dashboard"),
+  dashboardSidebar(
+    sidebarMenu(
+      menuItem("Welcome", tabName = "welcome", icon = icon("info-circle")),
+      menuItem("Overview per Run", tabName = "overview", icon = icon("chart-bar")),
+      menuItem("Compare Positives", tabName = "compare", icon = icon("sliders-h")),
+      menuItem("Concentration Analysis", tabName = "concentration", icon = icon("flask"))
+    )
+  ),
+  dashboardBody(
+    tabItems(
+      tabItem(tabName = "welcome",
+              fluidPage(
+                h2("Welcome to the dPCR Dashboard"),
+                p("The purpose of this application is to visualize dPCR data of cfDNA markers in the context of solid organ transplantation. It enables comparison of runs, samples, and experimental conditions in order to select the most optimal setup and to facilitate interpretation of the results."),
+                br(),
+                h4("Required Data Format"),
+                p("Please upload an Excel file (.xlsx) containing the following column names:"),
+                tags$ul(
+                  tags$li("Run_name"),
+                  tags$li("Group"),
+                  tags$li("Sample"),
+                  tags$li("Total"),
+                  tags$li("Conc (use a comma as decimal separator, e.g., 1,23)"),
+                  tags$li("Positives"),
+                  tags$li("Threshold"),
+                  tags$li("%NEG"),
+                  tags$li("%POS"),
+                  tags$li("Annealing temperature"),
+                  tags$li("Primers_Concentration"),
+                  tags$li("DNA (must be one of: Homozygous, Heterozygous, Multiplex, NegativeControl)")
+                ),
+                br(),
+                h4("Before Uploading"),
+                tags$ul(
+                  tags$li("Ensure that sample names are consistent across runs."),
+                  tags$li("Calculate %POS and %NEG in Excel prior to upload."),
+                  tags$li("Use a comma (,) as decimal separator in the 'Conc' column."),
+                  tags$li("Only .xlsx files with correct headers are accepted.")
+                ),
+                br(),
+                p("Use the tabs on the left to navigate through different analysis views.")
+              )
+      ),
+      
+      tabItem(tabName = "overview",
+              fluidPage(
+                h3("Overview per Run"),
+                p("This section allows you to view the %POS and %NEG values per sample for each selected run. It's useful to detect outliers and visualize trends across different experiments."),
+                sidebarLayout(
+                  sidebarPanel(
+                    fileInput("datafile", "Upload dPCR Excel file", accept = ".xlsx"),
+                    selectInput("group", "Select Group:", choices = NULL),
+                    selectInput("runNames", "Select Run Name(s):", choices = NULL, multiple = TRUE),
+                    downloadButton("downloadData", "Download Filtered Data")
+                  ),
+                  mainPanel(
+                    uiOutput("plotUI"),
+                    hr(),
+                    h4("Comparison of %POS across Runs per Sample (Top 10 most variable)"),
+                    plotlyOutput("comparisonPlot")
+                  )
+                )
+              )
+      ),
+      
+      tabItem(tabName = "compare",
+              fluidPage(
+                h3("Compare Positives"),
+                p("This section allows you to compare the number of positive droplets detected across multiple runs for the same sample(s). This can help identify consistency or variability in detection."),
+                sidebarLayout(
+                  sidebarPanel(
+                    uiOutput("sampleSelectUI")
+                  ),
+                  mainPanel(
+                    h4("Compare Positives of Selected Samples across Runs"),
+                    plotlyOutput("sampleBarPlot")
+                  )
+                )
+              )
+      ),
+      
+      tabItem(tabName = "concentration",
+              fluidPage(
+                h3("Concentration Analysis"),
+                p("In this section, you can explore the concentration values of cfDNA measured by dPCR, grouped by DNA type and experimental group. Use this view to compare concentration distributions across different groups."),
+                sidebarLayout(
+                  sidebarPanel(
+                    selectInput("groupBox", "Select Group:", choices = NULL, multiple = TRUE),
+                    downloadButton("downloadConc", "Download Table")
+                  ),
+                  mainPanel(
+                    plotlyOutput("groupDnaBoxPlot"),
+                    br(),
+                    h4("Filtered Data Table"),
+                    dataTableOutput("filteredTable")
+                  )
+                )
+              )
+      )
+    )
+  )
+)
+
+server <- function(input, output, session) {
+  data <- reactiveVal(NULL)
+  
+  observeEvent(input$datafile, {
+    req(input$datafile)
+    df <- read_excel(input$datafile$datapath, sheet = 1)
+    
+    df <- df %>%
+      mutate(across(c(Group, Run_name, Sample), ~trimws(as.character(.))))
+    
+    required_cols <- c("Group", "Run_name", "Sample", "%POS", "%NEG", "Threshold", "Positives")
+    if (!all(required_cols %in% colnames(df))) {
+      showModal(modalDialog(
+        title = "Column Error",
+        paste("The file is missing required columns:", 
+              paste(setdiff(required_cols, colnames(df)), collapse = ", ")),
+        easyClose = TRUE,
+        footer = NULL
+      ))
+      return()
+    }
+    
+    df$`%POS` <- round(as.numeric(df$`%POS`), 1)
+    df$`%NEG` <- round(as.numeric(df$`%NEG`), 1)
+    df$Positives <- round(as.numeric(df$Positives), 1)
+    df$Threshold <- round(as.numeric(df$Threshold), 1)
+    
+    data(df)
+    
+    updateSelectInput(session, "group", choices = unique(df$Group))
+    updateSelectInput(session, "groupBox", choices = unique(df$Group))
+  })
+  
+  output$plotUI <- renderUI({
+    req(input$runNames)
+    plot_output_list <- lapply(seq_along(input$runNames), function(i) {
+      plotlyOutput(outputId = paste0("resultPlot_", i))
+    })
+    do.call(tagList, plot_output_list)
+  })
+  
+  observe({
+    req(data(), input$group, input$runNames)
+    
+    color_palettes <- list(
+      c("#1f77b4", "#ff7f0e"),
+      c("#2ca02c", "#d62728"),
+      c("#9467bd", "#8c564b"),
+      c("#e377c2", "#7f7f7f"),
+      c("#17becf", "#bcbd22")
+    )
+    
+    lapply(seq_along(input$runNames), function(i) {
+      local({
+        run <- input$runNames[i]
+        plot_id <- paste0("resultPlot_", i)
+        colors <- color_palettes[[ (i - 1) %% length(color_palettes) + 1 ]]
+        
+        output[[plot_id]] <- renderPlotly({
+          plot_data <- data() %>%
+            filter(Group == input$group, Run_name == run) %>%
+            group_by(Sample, DNA) %>%
+            summarise(
+              `%POS` = mean(`%POS`, na.rm = TRUE),
+              `%NEG` = mean(`%NEG`, na.rm = TRUE),
+              Threshold = mean(Threshold, na.rm = TRUE),
+              Positives = mean(Positives, na.rm = TRUE),
+              .groups = 'drop'
+            ) %>%
+            pivot_longer(cols = c(`%POS`, `%NEG`), names_to = "Category", values_to = "Value") %>%
+            mutate(
+              TooltipText = paste0(
+                "Sample: ", Sample, "<br>",
+                "DNA: ", DNA, "<br>",
+                "Category: ", Category, "<br>",
+                "Mean Value: ", round(Value, 1), "%<br>",
+                "Threshold: ", round(Threshold, 1), "<br>",
+                "Positives: ", round(Positives, 1)
+              ),
+              label = ifelse(Category == "%POS", paste0(round(Value, 1), "%\n", DNA), NA)
+            )
+          
+          p <- ggplot(plot_data, aes(x = Sample, y = Value, fill = Category, text = TooltipText)) +
+            geom_bar(stat = "identity", position = "stack") +
+            geom_text(aes(label = label),
+                      position = position_stack(vjust = 0.5),
+                      color = "white", size = 3.5, na.rm = TRUE) +
+            scale_fill_manual(values = setNames(colors, c("%POS", "%NEG"))) +
+            labs(title = paste("Run:", run),
+                 x = "Sample", y = "Percentage %") +
+            theme_minimal() +
+            theme(axis.text.x = element_text(angle = 45, hjust = 1))
+          
+          ggplotly(p, tooltip = "text")
+        })
+      })
+    })
+  })
+  
+  observe({
+    req(data(), input$group)
+    filtered <- data() %>% filter(Group == input$group)
+    updateSelectInput(session, "runNames", choices = unique(filtered$Run_name))
+  })
+  
+  output$sampleSelectUI <- renderUI({
+    req(data(), input$group, input$runNames)
+    samples <- data() %>%
+      filter(Group == input$group, Run_name %in% input$runNames) %>%
+      pull(Sample) %>%
+      unique()
+    
+    selectInput("selectedSamples", "Select Sample(s):", choices = samples, multiple = TRUE)
+  })
+  
+  output$comparisonPlot <- renderPlotly({
+    req(data(), input$group, input$runNames)
+    
+    line_data <- data() %>%
+      filter(Group == input$group, Run_name %in% input$runNames) %>%
+      select(Sample, Run_name, `%POS`) %>%
+      mutate(`%POS` = round(`%POS`, 1))
+    
+    top_samples <- line_data %>%
+      group_by(Sample) %>%
+      summarise(sd_pos = sd(`%POS`, na.rm = TRUE)) %>%
+      slice_max(sd_pos, n = 10) %>%
+      pull(Sample)
+    
+    line_data <- line_data %>% filter(Sample %in% top_samples)
+    
+    p <- ggplot(line_data, aes(x = Run_name, y = `%POS`, group = Sample, color = Sample)) +
+      geom_line(linewidth = 1.2) +
+      geom_point(size = 2) +
+      labs(title = "%POS per Sample across Runs (Top 10 most variable)",
+           x = "Run", y = "%POS") +
+      theme_minimal() +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))
+    
+    ggplotly(p)
+  })
+  
+  output$sampleBarPlot <- renderPlotly({
+    req(data(), input$group, input$runNames, input$selectedSamples)
+    
+    plot_data <- data() %>%
+      filter(Group == input$group,
+             Run_name %in% input$runNames,
+             Sample %in% input$selectedSamples) %>%
+      select(Sample, Run_name, Positives, Threshold) %>%
+      mutate(
+        TooltipText = paste0(
+          "Sample: ", Sample, "<br>",
+          "Run: ", Run_name, "<br>",
+          "Positives: ", Positives, "<br>",
+          "Threshold: ", Threshold
+        )
+      )
+    
+    p <- ggplot(plot_data, aes(x = Sample, y = Positives, fill = Run_name, text = TooltipText)) +
+      geom_bar(stat = "identity", position = "dodge") +
+      labs(title = "Number of Positives per Sample across Runs",
+           x = "Sample", y = "Number of Positives") +
+      theme_minimal() +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))
+    
+    ggplotly(p, tooltip = "text")
+  })
+  
+  output$groupDnaBoxPlot <- renderPlotly({
+    req(data(), input$groupBox)
+    
+    plot_data <- data() %>%
+      filter(Group %in% input$groupBox) %>%
+      mutate(Conc = as.numeric(gsub(",", ".", Conc)))
+    
+    p <- ggplot(plot_data, aes(x = DNA, y = Conc, fill = DNA)) +
+      geom_boxplot() +
+      facet_wrap(~ Group, scales = "free") +
+      labs(title = "Concentration per DNA Type by Group",
+           x = "DNA Type",
+           y = "Concentration") +
+      theme_minimal() +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1))
+    
+    ggplotly(p)
+  })
+  
+  output$filteredTable <- renderDataTable({
+    req(data(), input$groupBox)
+    filtered <- data() %>%
+      filter(Group %in% input$groupBox) %>%
+      mutate(Conc = as.numeric(gsub(",", ".", Conc))) %>%
+      select(Run_name, Sample, Group, DNA, Threshold, Conc) %>%
+      arrange(desc(Conc))
+    
+    output$downloadConc <- downloadHandler(
+      filename = function() {
+        paste0("concentration_filtered_", format(Sys.Date(), "%Y%m%d"), ".csv")
+      },
+      content = function(file) {
+        write.csv(filtered, file, row.names = FALSE)
+      }
+    )
+    
+    datatable(filtered, options = list(pageLength = 10, scrollY = "300px"))
+  })
+  
+  output$downloadData <- downloadHandler(
+    filename = function() {
+      paste0("dPCR_filtered_", gsub(" ", "_", input$group), "_", format(Sys.Date(), "%Y%m%d"), ".csv")
+    },
+    content = function(file) {
+      req(data(), input$group, input$runNames)
+      filtered_data <- data() %>%
+        filter(Group == input$group, Run_name %in% input$runNames)
+      write.csv(filtered_data, file, row.names = FALSE)
+    }
+  )
+}
+
+shinyApp(ui, server)
