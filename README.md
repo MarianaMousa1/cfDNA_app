@@ -1,7 +1,7 @@
-Welcome to the dPCR Dashboard
+**Welcome to the dPCR Dashboard**
 The purpose of this application is to visualize dPCR data of cfDNA markers in the context of solid organ transplantation. It enables comparison of runs, samples, and experimental conditions in order to select the most optimal setup and to facilitate interpretation of the results.
 
-Required Data Format
+**Required Data Format**
 Please upload an Excel file (.xlsx) containing the following column names:
 
 Run_name
@@ -17,7 +17,7 @@ Annealing temperature
 Primers_Concentration
 DNA (must be one of: Homozygous, Heterozygous, Multiplex, NegativeControl)
 
-Before Uploading
+**Before Uploading**
 Ensure that sample names are consistent across runs.
 Calculate %POS and %NEG in Excel prior to upload.
 Use a comma (,) as decimal separator in the 'Conc' column.
